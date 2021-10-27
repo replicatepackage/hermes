@@ -24,3 +24,5 @@ After that, to run HERMES on different threshold, please use this command's temp
 python3 experiment.py --min_df 5 --use_linked_commits_only True --use_issue_classifier True --use_stacking_ensemble True --use-patch-context-lines False --tf-idf-threshold 0.005 --dataset **file_name**
 
 where file_name is name of file in list of files just extracted
+
+Link to our issue corpus: https://zenodo.org/record/5602211#.YXjQg9ZBxO8
