@@ -9,9 +9,8 @@ import csv
 import json
 from datetime import datetime
 from time import mktime
-from data_loader import data_loader
 from entities import EntityEncoder, GithubCommit, GithubCommitFile
-
+from loader import data_loader
 
 non_alphanumeric_pattern = re.compile(r'\W+', re.UNICODE)
 stopwords_set = set(stopwords.words('english'))
@@ -143,11 +142,11 @@ def preprocess_single_record(record, options):
     # print(record)
     if record.commit_message is not None:
         # print(record.commit_message)
-        if not options.use_issue_classifier and options.use_github_issue and len(record.github_issue_list) > 0:
-            record.commit_message = attach_github_issue(record.commit_message, record.github_issue_list, options)
-
-        if not options.use_issue_classifier and options.use_jira_ticket and len(record.jira_ticket_list) > 0:
-            record.commit_message = attach_jira_ticket(record.commit_message, record.jira_ticket_list, options)
+        # if not options.use_issue_classifier and options.use_github_issue and len(record.github_issue_list) > 0:
+        #     record.commit_message = attach_github_issue(record.commit_message, record.github_issue_list, options)
+        #
+        # if not options.use_issue_classifier and options.use_jira_ticket and len(record.jira_ticket_list) > 0:
+        #     record.commit_message = attach_jira_ticket(record.commit_message, record.jira_ticket_list, options)
 
         record.commit_message = process_textual_information(record.commit_message, options)
 
@@ -524,7 +523,7 @@ def get_username_to_user_info():
 
 def get_commit_to_username():
     commit_to_username = {}
-    with open(os.path.join(directory, 'data/github_statistics/commit_username_clean.csv'), mode='r') as csv_file:
+    with open(os.path.join(directory, 'data/github_statistics/commit_username_new.csv'), mode='r') as csv_file:
         csv_reader = csv.reader(csv_file)
         for row in csv_reader:
             commit_id = int(row[0])
@@ -687,7 +686,8 @@ def retrieve_record_to_ownership(records, commit_to_username):
 def retrieve_record_to_committer_experience(records, repo_to_contributor_data, commit_to_username):
     print("Start retrieving committer 's experience...")
     record_to_average_experience = {}
-    record_to_commmiter_experience = {}
+    record_to_committer_experience = {}
+    record_to_total_count = {}
     for record in records:
         repo = record.repo
         record_id = int(record.id)
@@ -697,36 +697,38 @@ def retrieve_record_to_committer_experience(records, repo_to_contributor_data, c
         # default = 1 to avoid divide by zero
         record_to_average_experience[record_id] = 1
         if record_id not in commit_to_username:
-            record_to_commmiter_experience[record_id] = 0
+            record_to_committer_experience[record_id] = 0
             continue
 
         committer = commit_to_username[record_id]
-        total_count = 0
+        total_count = 1
 
         developer_count = 0
-        record_to_commmiter_experience[record_id] = 0
+        record_to_committer_experience[record_id] = 0
 
         for username, data in contributor_data.items():
             commit_count = get_commit_count_before(data, commit_timestamp)
             if username == committer:
-                record_to_commmiter_experience[record_id] = commit_count
+                record_to_committer_experience[record_id] = commit_count
             if commit_count != 0:
                 total_count += commit_count
                 developer_count += 1
 
-        average_experience = -1
+        average_experience = 1
         if developer_count != 0:
             average_experience = total_count/developer_count
 
         record_to_average_experience[record_id] = average_experience
+        record_to_total_count[record_id] = total_count
 
     record_to_experience_file_path = os.path.join(directory, 'data/github_statistics/features/record_to_experience.csv')
     with open(record_to_experience_file_path, 'w') as file:
         csv_writer = csv.writer(file)
-        csv_writer.writerow(['record_id', 'committer_experience', 'average_experience'])
+        csv_writer.writerow(['record_id', 'committer_experience', 'average_experience', 'total_count'])
         for record in records:
             record_id = int(record.id)
-            csv_writer.writerow([record_id, record_to_commmiter_experience[record_id], record_to_average_experience[record_id]])
+            csv_writer.writerow([record_id, record_to_committer_experience[record_id], record_to_average_experience[record_id],
+                                 record_to_total_count[record_id]])
 
     print('Finish retrieving committer experience')
 
@@ -768,7 +770,7 @@ def do_calculate_ownership():
 
 
 def load_committer_experience():
-    record_to_committer_experience, record_to_average_experience = {}, {}
+    record_to_committer_experience, record_to_average_experience, record_to_total_count = {}, {}, {}
     experience_file_path = os.path.join(directory, 'data/github_statistics/features/record_to_experience.csv')
     with open(experience_file_path, 'r') as file:
         csv_reader = csv.reader(file)
@@ -780,10 +782,12 @@ def load_committer_experience():
             record_id = int(row[0])
             committer_exp = float(row[1])
             average_exp = float(row[2])
+            total_count = int(row[3])
             record_to_committer_experience[record_id] = committer_exp
             record_to_average_experience[record_id] = average_exp
+            record_to_total_count[record_id] = total_count
 
-    return record_to_committer_experience, record_to_average_experience
+    return record_to_committer_experience, record_to_average_experience, record_to_total_count
 
 
 def load_ownership():
@@ -813,6 +817,28 @@ def get_first_commit_on_repo(data):
     return min_time
 
 
+def get_test_file_count(record):
+    count = 0
+    commit = record.commit
+    for commit_file in commit.files:
+        file_name = commit_file.file_name
+        if 'src/test' in file_name and file_name.endswith('.java'):
+            count += 1
+
+    return count
+
+
+def get_main_file_count(record):
+    count = 0
+    commit = record.commit
+    for commit_file in commit.files:
+        file_name = commit_file.file_name
+        if 'src/test' not in file_name and file_name.endswith('.java'):
+            count += 1
+
+    return count
+
+
 def get_repo_to_repo_first_commit(repo_to_contributor_data):
     repo_to_repo_first_commit = {}
 
@@ -824,4 +850,3 @@ def get_repo_to_repo_first_commit(repo_to_contributor_data):
         repo_to_repo_first_commit[repo] = min_time
 
     return repo_to_repo_first_commit
-

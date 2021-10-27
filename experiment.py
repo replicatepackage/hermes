@@ -1,4 +1,4 @@
-from data_loader import data_loader
+from loader import data_loader
 from utils import print_line_seperator
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.model_selection import KFold
@@ -16,7 +16,9 @@ import datetime
 from sklearn.feature_extraction.text import TfidfVectorizer
 import os
 
-file_path = 'MSR2019/experiment/enhanced_dataset_07042021_th_80.txt'
+np.random.seed(109)
+
+file_path = 'MSR2019/experiment/full_dataset_with_all_features.txt'
 options = feature_options.ExperimentOption()
 
 
@@ -212,6 +214,7 @@ def retrieve_data(records, train_data_indices, test_data_indices):
 
 
 def measure_joint_model(log_message_prediction, issue_prediction, patch_prediction,
+                        log_message_test_predict_prob, patch_test_predict_prob,
                         test_data_labels, options):
     join_prediction = []
 
@@ -221,12 +224,30 @@ def measure_joint_model(log_message_prediction, issue_prediction, patch_predicti
         else:
             join_prediction.append(int(log_message_prediction[index] or patch_prediction[index]))
 
+    # precision = metrics.precision_score(y_pred=join_prediction, y_true=test_data_labels)
+    # recall = metrics.recall_score(y_pred=join_prediction, y_true=test_data_labels)
+    # f1 = metrics.f1_score(y_pred=join_prediction, y_true=test_data_labels)
+    log_neg_probs = log_message_test_predict_prob
+    log_pos_probs = [1 - prob for prob in log_neg_probs]
+    patch_neg_probs = patch_test_predict_prob
+    patch_pos_probs = [1 - prob for prob in patch_neg_probs]
+
+    y_pos_probs = []
+    for i, log_prob in enumerate(log_pos_probs):
+        y_pos_probs.append(max(log_prob, patch_pos_probs[i]))
+
+    y_neg_probs = []
+    for i, log_prob in enumerate(log_neg_probs):
+        y_neg_probs.append(max(log_prob, patch_neg_probs[i]))
+
+
     precision = metrics.precision_score(y_pred=join_prediction, y_true=test_data_labels)
     recall = metrics.recall_score(y_pred=join_prediction, y_true=test_data_labels)
     f1 = metrics.f1_score(y_pred=join_prediction, y_true=test_data_labels)
-    # print("Join-model precision: {}".format(precision))
-    # print("Join-model recall: {}".format(recall))
-    return precision, recall, f1
+    auc_roc = metrics.roc_auc_score(y_true=test_data_labels, y_score=y_pos_probs)
+    auc_pr = metrics.average_precision_score(y_true=test_data_labels, y_score=y_pos_probs)
+
+    return precision, recall, f1, auc_roc, auc_pr
 
 
 def measure_joint_model_using_logistic_regression(train_data, test_data, log_message_train_predict_prob, id_to_issue_train_predict_prob,
@@ -287,10 +308,12 @@ def measure_joint_model_using_logistic_regression(train_data, test_data, log_mes
 
     ensemble_classifier.fit(X=X_train, y=y_train)
     y_pred = ensemble_classifier.predict(X=X_test)
+    y_prob = ensemble_classifier.predict_proba(X=X_test)[:, 1]
     joint_precision = metrics.precision_score(y_pred=y_pred, y_true=y_test)
     joint_recall = metrics.recall_score(y_pred=y_pred, y_true=y_test)
     joint_f1 = metrics.f1_score(y_pred=y_pred, y_true=y_test)
-
+    joint_auc_roc = metrics.roc_auc_score(y_true=y_test, y_score=y_prob)
+    joint_auc_pr = metrics.average_precision_score(y_true=y_test, y_score=y_prob)
     false_positives, false_negatives = retrieve_false_positive_negative(y_pred=y_pred, y_test=y_test)
 
     for label in y_train:
@@ -299,7 +322,7 @@ def measure_joint_model_using_logistic_regression(train_data, test_data, log_mes
 
     for label in y_test:
         lines = lines + str(label) + '\n'
-    return joint_precision, joint_recall, joint_f1, false_positives, false_negatives, lines
+    return joint_precision, joint_recall, joint_f1, joint_auc_roc, joint_auc_pr, false_positives, false_negatives, lines
 
 
 def get_list_value_from_string(input):
@@ -397,9 +420,10 @@ def retrieve_top_features(classifier, vectorizer):
 @click.option('--dataset', default='', type=str)
 @click.option('--tf-idf-threshold', default=-1, type=float)
 @click.option('--use-patch-context-lines', default=False, type=bool)
+@click.option('--run-fold', default=-1, type=int)
 def do_experiment(size, ignore_number, github_issue, jira_ticket, use_comments, positive_weights, n_gram, min_df,
                   use_linked_commits_only, use_issue_classifier, fold_to_run, use_stacking_ensemble, dataset,
-                  tf_idf_threshold, use_patch_context_lines):
+                  tf_idf_threshold, use_patch_context_lines, run_fold):
 
     global file_path
     if dataset != '':
@@ -417,8 +441,7 @@ def do_experiment(size, ignore_number, github_issue, jira_ticket, use_comments, 
                                                             tf_idf_threshold,
                                                             use_patch_context_lines)
 
-    commit_message_vectorizer = CountVectorizer(ngram_range=(1, options.max_n_gram),
-                                                min_df=options.min_document_frequency)
+    commit_message_vectorizer = CountVectorizer(ngram_range=(1, options.max_n_gram))
 
     issue_vectorizer = CountVectorizer(ngram_range=(1, options.max_n_gram),
                                        min_df=options.min_document_frequency)
@@ -429,6 +452,8 @@ def do_experiment(size, ignore_number, github_issue, jira_ticket, use_comments, 
 
     records = data_loader.load_records(file_path)
 
+    random.shuffle(records)
+
     if options.use_linked_commits_only:
         new_records = []
         for record in records:
@@ -436,7 +461,6 @@ def do_experiment(size, ignore_number, github_issue, jira_ticket, use_comments, 
                 new_records.append(record)
         records = new_records
 
-    random.shuffle(records)
     if options.data_set_size != -1:
         records = records[:options.data_set_size]
 
@@ -463,6 +487,8 @@ def do_experiment(size, ignore_number, github_issue, jira_ticket, use_comments, 
     weight_to_joint_precisions = {}
     weight_to_joint_recalls = {}
     weight_to_joint_f1s = {}
+    weight_to_joint_auc_roc = {}
+    weight_to_joint_auc_pr = {}
 
     for positive_weight in positive_weights:
         negative_weight = 1 - positive_weight
@@ -490,6 +516,8 @@ def do_experiment(size, ignore_number, github_issue, jira_ticket, use_comments, 
         weight_to_joint_precisions[positive_weight] = []
         weight_to_joint_recalls[positive_weight] = []
         weight_to_joint_f1s[positive_weight] = []
+        weight_to_joint_auc_roc[positive_weight] = []
+        weight_to_joint_auc_pr[positive_weight] = []
 
     false_positive_message_records = []
     false_negative_message_records = []
@@ -510,6 +538,8 @@ def do_experiment(size, ignore_number, github_issue, jira_ticket, use_comments, 
 
     for train_data_indices, test_data_indices in k_fold.split(records):
         fold_count += 1
+        if run_fold != -1 and fold_count != run_fold:
+            continue
         output_file_name = "fold_" + str(fold_count) + "_" + str(date) + "_" + str(time) + ".txt"
         output_file_path = os.path.join(directory, "classifier_output/" + output_file_name)
         if fold_count > options.fold_to_run:
@@ -548,9 +578,10 @@ def do_experiment(size, ignore_number, github_issue, jira_ticket, use_comments, 
             precision, recall, f1, log_message_prediction, log_message_train_predict_prob, log_message_test_predict_prob, false_positives, false_negatives\
                 = log_message_classify(log_classifier, log_x_train, log_y_train, log_x_test, log_y_test)
 
-            print("Top features for log message classifier:")
-            retrieve_top_features(log_classifier, commit_message_vectorizer)
-            print_line_seperator()
+            print("Message F1: {}".format(f1))
+            # print("Top features for log message classifier:")
+            # retrieve_top_features(log_classifier, commit_message_vectorizer)
+            # print_line_seperator()
 
             weight_to_log_precisions[positive_weight].append(precision)
             weight_to_log_recalls[positive_weight].append(recall)
@@ -564,9 +595,10 @@ def do_experiment(size, ignore_number, github_issue, jira_ticket, use_comments, 
                 precision, recall, f1, issue_prediction, id_to_issue_train_predict_prob, id_to_issue_test_predict_prob, false_positives, false_negatives\
                     = issue_classify(issue_classifier, issue_x_train, issue_y_train, issue_x_test, issue_y_test, train_data, test_data)
 
-                print("Top features for issue classifier:")
-                retrieve_top_features(issue_classifier, issue_vectorizer)
-                print_line_seperator()
+                print("Issue F1: {}".format(f1))
+                # print("Top features for issue classifier:")
+                # retrieve_top_features(issue_classifier, issue_vectorizer)
+                # print_line_seperator()
 
                 weight_to_issue_precisions[positive_weight].append(precision)
                 weight_to_issue_recalls[positive_weight].append(recall)
@@ -580,9 +612,10 @@ def do_experiment(size, ignore_number, github_issue, jira_ticket, use_comments, 
             precision, recall, f1, patch_prediction, patch_train_predict_prob, patch_test_predict_prob, false_positives, false_negatives\
                 = patch_classify(patch_classifier, patch_x_train, patch_y_train, patch_x_test, patch_y_test)
 
-            print("Top features for patch classifier:")
-            retrieve_top_features(patch_classifier, patch_vectorizer)
-            print_line_seperator()
+            print("Patch F1: {}".format(f1))
+            # print("Top features for patch classifier:")
+            # retrieve_top_features(patch_classifier, patch_vectorizer)
+            # print_line_seperator()
 
             weight_to_patch_precisions[positive_weight].append(precision)
             weight_to_patch_recalls[positive_weight].append(recall)
@@ -594,7 +627,7 @@ def do_experiment(size, ignore_number, github_issue, jira_ticket, use_comments, 
             joint_precision, joint_recall, joint_f1 = None, None, None
 
             if options.use_stacking_ensemble:
-                joint_precision, joint_recall, joint_f1, false_positive_joint_records, false_negative_joint_records, output_lines \
+                joint_precision, joint_recall, joint_f1, joint_auc_roc, joint_auc_pr, false_positive_joint_records, false_negative_joint_records, output_lines \
                     = measure_joint_model_using_logistic_regression(train_data=train_data,
                                                                     test_data=test_data,
                                                                     log_message_train_predict_prob=log_message_train_predict_prob,
@@ -610,14 +643,17 @@ def do_experiment(size, ignore_number, github_issue, jira_ticket, use_comments, 
                     f.write(output_lines)
                 f.close()
             else:
-                joint_precision, joint_recall, joint_f1 \
+                joint_precision, joint_recall, joint_f1, joint_auc_roc, joint_auc_pr \
                     = measure_joint_model(log_message_prediction, issue_prediction,
-                                          patch_prediction, retrieve_label(test_data), options)
+                                          patch_prediction, log_message_test_predict_prob, patch_test_predict_prob, retrieve_label(test_data), options)
 
             weight_to_joint_precisions[positive_weight].append(joint_precision)
             weight_to_joint_recalls[positive_weight].append(joint_recall)
             weight_to_joint_f1s[positive_weight].append(joint_f1)
+            weight_to_joint_auc_roc[positive_weight].append(joint_auc_roc)
+            weight_to_joint_auc_pr[positive_weight].append(joint_auc_pr)
 
+        break
     print_line_seperator()
 
     for positive_weight in positive_weights:
@@ -638,6 +674,8 @@ def do_experiment(size, ignore_number, github_issue, jira_ticket, use_comments, 
         print("Joint-model mean precision: {}".format(np.mean(weight_to_joint_precisions[positive_weight])))
         print("Joint-model mean recall: {}".format(np.mean(weight_to_joint_recalls[positive_weight])))
         print("Joint-model mean f1: {}".format(np.mean(weight_to_joint_f1s[positive_weight])))
+        print("Joint-model mean AUC-ROC: {}".format(np.mean(weight_to_joint_auc_roc[positive_weight])))
+        print("Joint-model mean AUC-PR: {}".format(np.mean(weight_to_joint_auc_pr[positive_weight])))
         print_line_seperator()
 
     write_false_index_to_file(false_positive_message_records, false_negative_message_records,
@@ -649,7 +687,7 @@ def do_experiment(size, ignore_number, github_issue, jira_ticket, use_comments, 
 if __name__ == '__main__':
     do_experiment()
 
-# records = data_loader.load_records(file_path)
+# records = loader.load_records(file_path)
 # count_issue = 0
 # count_ticket = 0
 # count_both = 0
@@ -670,7 +708,7 @@ if __name__ == '__main__':
 # count_pos_all = 0
 # count_neg_all = 0
 # count_other = 0
-# records = data_loader.load_records(file_path)
+# records = loader.load_records(file_path)
 # for record in records:
 #     if record.label == 1:
 #         count_pos_all += 1
