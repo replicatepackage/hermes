@@ -1,4 +1,4 @@
-import data_loader
+from loader import data_loader
 import os
 import json
 from entities import JiraTicket
@@ -402,12 +402,12 @@ def calculate_similarity_scores(records, jira_tickets, tfidf_vectorizer, using_c
                 max_score = current_score
                 best_ticket = ticket
         if best_ticket is not None:
-            score_lines.append(record.id + '\t\t' + record.repo + '/commit/' + record.commit_id + '\t\t'
+            score_lines.append(str(record.id) + '\t\t' + record.repo + '/commit/' + record.commit_id + '\t\t'
                                + str(best_ticket.id)
                                + '\t\t' + str(max_score) + '\t\t' + best_ticket.name)
         else:
             score_lines.append(
-                record.id + '\t\t' + record.repo + '/commit/' + record.commit_id + '\t\t' + 'None'
+                str(record.id) + '\t\t' + record.repo + '/commit/' + record.commit_id + '\t\t' + 'None'
                 + '\t\t' + '0' + '\t\t' + 'None')
 
         if record_count % 50 == 0:
@@ -476,7 +476,7 @@ def process_linking(testing, min_df, using_code_terms_only, limit_feature, text_
                 new_records.append(record)
 
     records = new_records
-    random.shuffle(records)
+    # random.shuffle(records)
 
     print("Records length: {}".format(len(records)))
     # todo for testing only
@@ -537,7 +537,7 @@ def process_linking(testing, min_df, using_code_terms_only, limit_feature, text_
     else:
         jira_tickets = load_jira_tickets(testing)
 
-    random.shuffle(jira_tickets)
+    # random.shuffle(jira_tickets)
     print("Issues length: {}".format(len(jira_tickets)))
     print("Start extracting issue features...")
     for issue in jira_tickets:
